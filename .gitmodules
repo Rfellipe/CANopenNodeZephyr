@@ -1,3 +1,4 @@
 [submodule "CANopenNode"]
 	path = CANopenNode
-	url = https://github.com/CANopenNode/CANopenNode
+	url = git@github.com:alexandre-ulx/CANopenNode-linux-CIA402.git
+	branch = CiA_402_implementation

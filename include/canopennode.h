@@ -22,7 +22,7 @@
 
 #include <CANopen.h>
 #include <CO_Emergency.h>
-#include <CO_SDO.h>
+#include <CO_SDOserver.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -41,13 +41,14 @@ struct canopen_context {
 	const struct device *dev;
 };
 
+extern CO_t *CO;
+
 /**
  * @brief Attach CANopen object dictionary storage handlers.
  *
  * Attach CANopen storage handler functions to object dictionary
  * indexes 0x1010 (Store parameters) and 0x1011 (Restore default
- * parameters). This function must be called after calling CANopenNode
- * `CO_init()`.
+ * parameters). This function must be called after initializing CANopenNode.
  *
  * The handlers will save object dictionary entries of type @ref
  * CANOPEN_STORAGE_ROM to non-volatile storage when a CANopen SDO
@@ -70,7 +71,7 @@ struct canopen_context {
  * @param sdo CANopenNode SDO server object
  * @param em  CANopenNode Emergency object
  */
-void canopen_storage_attach(CO_SDO_t *sdo, CO_EM_t *em);
+void canopen_storage_attach(CO_SDOserver_t *sdo, CO_EM_t *em);
 
 /**
  * @brief Save CANopen object dictionary entries to non-volatile storage.
@@ -101,13 +102,13 @@ int canopen_storage_erase(enum canopen_storage storage);
  *
  * Attach CANopen program download functions to object dictionary
  * indexes 0x1F50, 0x1F51, 0x1F56, and 0x1F57. This function must be
- * called after calling CANopenNode `CO_init()`.
+ * called after initializing CANopenNode.
  *
  * @param nmt CANopenNode NMT object
  * @param sdo CANopenNode SDO server object
  * @param em  CANopenNode Emergency object
  */
-void canopen_program_download_attach(CO_NMT_t *nmt, CO_SDO_t *sdo, CO_EM_t *em);
+void canopen_program_download_attach(CO_NMT_t *nmt, CO_SDOserver_t *sdo, CO_EM_t *em);
 
 /**
  * @typedef canopen_led_callback_t
@@ -125,13 +126,13 @@ typedef void (*canopen_led_callback_t)(bool value, void *arg);
  * their state. Two LED indicators, a red and a green, are supported
  * according to CiA 303-3.
  *
- * @param nmt CANopenNode NMT object.
+ * @param leds CANopenNode LEDs object.
  * @param green_cb callback for changing state on the green LED indicator.
  * @param green_arg argument to pass to the green LED indicator callback.
  * @param red_cb callback for changing state on the red LED indicator.
  * @param red_arg argument to pass to the red LED indicator callback.
  */
-void canopen_leds_init(CO_NMT_t *nmt,
+void canopen_leds_init(CO_LEDs_t *leds,
 		       canopen_led_callback_t green_cb, void *green_arg,
 		       canopen_led_callback_t red_cb, void *red_arg);
 

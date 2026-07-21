@@ -49,6 +49,7 @@ config CANOPENNODE_TX_WORKQUEUE_PRIORITY
 config CANOPENNODE_STORAGE
 	bool "CANopen object dictionary storage"
 	depends on SETTINGS
+	depends on !CANOPENNODE_CIA402
 	default y
 	help
 	  Enable support for storing the CANopen object dictionary to
@@ -75,6 +76,13 @@ config CANOPENNODE_LEDS_BICOLOR
 	  Handle CANopen LEDs as one bicolor LED, favoring the red LED
 	  over the green LED in accordance with the CiA 303-3
 	  specification.
+
+config CANOPENNODE_CIA402
+	bool "CANopen CiA 402 drive profile"
+	help
+	  Enable the CANopenNode CiA 402 drive profile object. The
+	  application must provide CiA 402 object dictionary entries and
+	  register hardware callbacks with CO_CANopenInitCiA402Hw().
 
 config CANOPENNODE_SYNC_THREAD
 	bool "CANopen SYNC thread"
@@ -112,6 +120,7 @@ config CANOPENNODE_SYNC_THREAD_PRIORITY
 config CANOPENNODE_PROGRAM_DOWNLOAD
 	bool "CANopen program download"
 	depends on BOOTLOADER_MCUBOOT
+	depends on !CANOPENNODE_CIA402
 	select IMG_MANAGER
 	default y
 	help

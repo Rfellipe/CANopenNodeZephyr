@@ -8,7 +8,7 @@
 #include <canopennode.h>
 
 struct canopen_leds_state {
-	CO_NMT_t *nmt;
+	CO_LEDs_t *leds;
 	canopen_led_callback_t green_cb;
 	void *green_arg;
 	canopen_led_callback_t red_cb;
@@ -27,15 +27,13 @@ static void canopen_leds_update(struct k_timer *timer_id)
 
 	ARG_UNUSED(timer_id);
 
-	CO_NMT_blinkingProcess50ms(canopen_leds.nmt);
-
 	if (canopen_leds.program_download) {
-		green = LED_TRIPLE_FLASH(canopen_leds.nmt);
+		green = CO_LED_GREEN(canopen_leds.leds, CO_LED_flash_3);
 	} else {
-		green = LED_GREEN_RUN(canopen_leds.nmt);
+		green = CO_LED_GREEN(canopen_leds.leds, CO_LED_CANopen);
 	}
 
-	red = LED_RED_ERROR(canopen_leds.nmt);
+	red = CO_LED_RED(canopen_leds.leds, CO_LED_CANopen);
 
 #ifdef CONFIG_CANOPENNODE_LEDS_BICOLOR
 	if (red && canopen_leds.red_cb) {
@@ -60,13 +58,13 @@ static void canopen_leds_update(struct k_timer *timer_id)
 
 K_TIMER_DEFINE(canopen_leds_timer, canopen_leds_update, NULL);
 
-void canopen_leds_init(CO_NMT_t *nmt,
+void canopen_leds_init(CO_LEDs_t *leds,
 		       canopen_led_callback_t green_cb, void *green_arg,
 		       canopen_led_callback_t red_cb, void *red_arg)
 {
 	k_timer_stop(&canopen_leds_timer);
 
-	canopen_leds.nmt = nmt;
+	canopen_leds.leds = leds;
 
 	/* Call existing callbacks to turn off LEDs */
 	if (canopen_leds.green_cb) {
@@ -91,7 +89,7 @@ void canopen_leds_init(CO_NMT_t *nmt,
 		canopen_leds.red_cb(false, canopen_leds.red_arg);
 	}
 
-	if (nmt && (green_cb || red_cb)) {
+	if (leds && (green_cb || red_cb)) {
 		k_timer_start(&canopen_leds_timer, K_MSEC(50), K_MSEC(50));
 	}
 }

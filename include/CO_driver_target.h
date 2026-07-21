@@ -11,12 +11,14 @@
  * Zephyr RTOS CAN driver interface and configuration for CANopenNode
  * CANopen protocol stack.
  *
- * See CANopenNode/stack/drvTemplate/CO_driver.h for API description.
+ * See CANopenNode/301/CO_driver.h for API description.
  */
 
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+#include <stddef.h>
 
 #include <zephyr/kernel.h>
 #include <zephyr/types.h>
@@ -37,8 +39,15 @@ extern "C" {
 #define CO_USE_LEDS 1
 #endif
 
+#ifdef CONFIG_CANOPENNODE_CIA402
+#define CO_CONFIG_CIA402 CO_CONFIG_CIA402_ENABLE
+#endif
+
 #ifdef CONFIG_LITTLE_ENDIAN
 #define CO_LITTLE_ENDIAN
+#define CO_SWAP_16(x) (x)
+#define CO_SWAP_32(x) (x)
+#define CO_SWAP_64(x) (x)
 #else
 #define CO_BIG_ENDIAN
 #endif
@@ -57,13 +66,17 @@ typedef struct canopen_rx_msg {
 	uint8_t DLC;
 } CO_CANrxMsg_t;
 
+#define CO_CANrxMsg_readIdent(msg) (((const CO_CANrxMsg_t *)(msg))->ident)
+#define CO_CANrxMsg_readDLC(msg)   (((const CO_CANrxMsg_t *)(msg))->DLC)
+#define CO_CANrxMsg_readData(msg)  (((const CO_CANrxMsg_t *)(msg))->data)
+
 typedef void (*CO_CANrxBufferCallback_t)(void *object,
-					 const CO_CANrxMsg_t *message);
+					 void *message);
 
 typedef struct canopen_rx {
 	int filter_id;
 	void *object;
-	CO_CANrxBufferCallback_t pFunct;
+	CO_CANrxBufferCallback_t CANrx_callback;
 	uint16_t ident;
 	uint16_t mask;
 #ifdef CONFIG_CAN_ACCEPT_RTR
@@ -76,46 +89,57 @@ typedef struct canopen_tx {
 	uint16_t ident;
 	uint8_t DLC;
 	bool_t rtr : 1;
-	bool_t bufferFull : 1;
-	bool_t syncFlag : 1;
+	volatile bool_t bufferFull : 1;
+	volatile bool_t syncFlag : 1;
 } CO_CANtx_t;
 
 typedef struct canopen_module {
-	const struct device *dev;
-	CO_CANrx_t *rx_array;
-	CO_CANtx_t *tx_array;
-	uint16_t rx_size;
-	uint16_t tx_size;
-	uint32_t errors;
+	void *CANptr;
+	CO_CANrx_t *rxArray;
+	uint16_t rxSize;
+	CO_CANtx_t *txArray;
+	uint16_t txSize;
+	uint16_t CANerrorStatus;
+	uint32_t errOld;
 	void *em;
-	bool_t configured : 1;
-	bool_t CANnormal : 1;
-	bool_t first_tx_msg : 1;
+	volatile bool_t CANnormal : 1;
+	volatile bool_t useCANrxFilters : 1;
+	volatile bool_t bufferInhibitFlag : 1;
+	volatile bool_t firstCANtxMessage : 1;
+	volatile uint16_t CANtxCount;
 } CO_CANmodule_t;
+
+typedef struct {
+	void *addr;
+	size_t len;
+	uint8_t subIndexOD;
+	uint8_t attr;
+	void *addrNV;
+} CO_storage_entry_t;
 
 void canopen_send_lock(void);
 void canopen_send_unlock(void);
-#define CO_LOCK_CAN_SEND()   canopen_send_lock()
-#define CO_UNLOCK_CAN_SEND() canopen_send_unlock()
+#define CO_LOCK_CAN_SEND(CAN_MODULE)   canopen_send_lock()
+#define CO_UNLOCK_CAN_SEND(CAN_MODULE) canopen_send_unlock()
 
 void canopen_emcy_lock(void);
 void canopen_emcy_unlock(void);
-#define CO_LOCK_EMCY()   canopen_emcy_lock()
-#define CO_UNLOCK_EMCY() canopen_emcy_unlock()
+#define CO_LOCK_EMCY(CAN_MODULE)   canopen_emcy_lock()
+#define CO_UNLOCK_EMCY(CAN_MODULE) canopen_emcy_unlock()
 
 void canopen_od_lock(void);
 void canopen_od_unlock(void);
-#define CO_LOCK_OD()   canopen_od_lock()
-#define CO_UNLOCK_OD() canopen_od_unlock()
+#define CO_LOCK_OD(CAN_MODULE)   canopen_od_lock()
+#define CO_UNLOCK_OD(CAN_MODULE) canopen_od_unlock()
 
 /*
  * CANopenNode RX callbacks run in interrupt context, no memory
  * barrier needed.
  */
-#define CANrxMemoryBarrier()
-#define IS_CANrxNew(rxNew) ((uintptr_t)rxNew)
-#define SET_CANrxNew(rxNew) { CANrxMemoryBarrier(); rxNew = (void *)1L; }
-#define CLEAR_CANrxNew(rxNew) { CANrxMemoryBarrier(); rxNew = (void *)0L; }
+#define CO_MemoryBarrier()
+#define CO_FLAG_READ(rxNew) ((rxNew) != NULL)
+#define CO_FLAG_SET(rxNew) { CO_MemoryBarrier(); rxNew = (void *)1L; }
+#define CO_FLAG_CLEAR(rxNew) { CO_MemoryBarrier(); rxNew = NULL; }
 
 #ifdef __cplusplus
 }

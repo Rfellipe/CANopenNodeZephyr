@@ -337,7 +337,7 @@ static CO_SDO_abortCode_t canopen_odf_1f56(CO_ODF_arg_t *odf_arg)
 	 * Release the lock before performing time consuming work, and reacquire
 	 * before return.
 	 */
-	CO_UNLOCK_OD();
+	CO_UNLOCK_OD(NULL);
 
 	/*
 	 * Calculate the CRC32 of the image that is running or will be
@@ -354,7 +354,7 @@ static CO_SDO_abortCode_t canopen_odf_1f56(CO_ODF_arg_t *odf_arg)
 		LOG_WRN("failed to read bank header (err %d)", err);
 		CO_setUint32(odf_arg->data, 0U);
 
-		CO_LOCK_OD();
+		CO_LOCK_OD(NULL);
 		return CO_SDO_AB_NONE;
 	}
 
@@ -363,7 +363,7 @@ static CO_SDO_abortCode_t canopen_odf_1f56(CO_ODF_arg_t *odf_arg)
 			header.mcuboot_version);
 		CO_setUint32(odf_arg->data, 0U);
 
-		CO_LOCK_OD();
+		CO_LOCK_OD(NULL);
 		return CO_SDO_AB_NONE;
 	}
 	len = header.h.v1.image_size;
@@ -374,7 +374,7 @@ static CO_SDO_abortCode_t canopen_odf_1f56(CO_ODF_arg_t *odf_arg)
 		CO_errorReport(ctx.em, CO_EM_NON_VOLATILE_MEMORY,
 			       CO_EMC_HARDWARE, err);
 
-		CO_LOCK_OD();
+		CO_LOCK_OD(NULL);
 		return CO_SDO_AB_HW;
 	}
 
@@ -387,13 +387,13 @@ static CO_SDO_abortCode_t canopen_odf_1f56(CO_ODF_arg_t *odf_arg)
 		CO_errorReport(ctx.em, CO_EM_NON_VOLATILE_MEMORY,
 			       CO_EMC_HARDWARE, err);
 
-		CO_LOCK_OD();
+		CO_LOCK_OD(NULL);
 		return CO_SDO_AB_HW;
 	}
 
 	CO_setUint32(odf_arg->data, crc);
 
-	CO_LOCK_OD();
+	CO_LOCK_OD(NULL);
 	return CO_SDO_AB_NONE;
 }
 #endif /* CONFIG_BOOTLOADER_MCUBOOT */

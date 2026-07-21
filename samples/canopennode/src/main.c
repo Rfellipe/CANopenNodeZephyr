@@ -7,8 +7,9 @@
 #include <zephyr/kernel.h>
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/sys/reboot.h>
-#include <zephyr/settings/settings.h>
+
 #include <canopennode.h>
+#include <OD.h>
 
 #define LOG_LEVEL CONFIG_CANOPENNODE_LOG_LEVEL
 #include <zephyr/logging/log.h>
@@ -19,289 +20,380 @@ LOG_MODULE_REGISTER(app);
 					  DT_PROP_OR(DT_CHOSEN(zephyr_canbus), bus_speed, \
 						     CONFIG_CAN_DEFAULT_BITRATE)) / 1000)
 
+#define FIRST_HB_TIME_MS 500U
+#define SDO_SERVER_TIMEOUT_MS 1000U
+#define SDO_CLIENT_TIMEOUT_MS 500U
+#define NMT_CONTROL (CO_NMT_STARTUP_TO_OPERATIONAL | CO_NMT_ERR_ON_BUSOFF_HB)
+
 static struct gpio_dt_spec led_green_gpio = GPIO_DT_SPEC_GET_OR(
 		DT_ALIAS(green_led), gpios, {0});
 static struct gpio_dt_spec led_red_gpio = GPIO_DT_SPEC_GET_OR(
 		DT_ALIAS(red_led), gpios, {0});
 
-static struct gpio_dt_spec button_gpio = GPIO_DT_SPEC_GET_OR(
-		DT_ALIAS(sw0), gpios, {0});
-static struct gpio_callback button_callback;
+CO_t *CO;
 
-struct led_indicator {
-	const struct device *dev;
-	gpio_pin_t pin;
+#if defined(CONFIG_CANOPENNODE_CIA402)
+struct cia402_sim_drive {
+	CO_CiA402_feedback_t feedback;
+	CO_CiA402_motionConfig_t last_config;
+	int8_t mode;
+	bool_t voltage_enabled;
+	bool_t switched_on;
+	bool_t operation_enabled;
+	bool_t quick_stop_active;
+	bool_t halt_active;
 };
 
-static uint32_t counter;
+static void cia402_store_config(struct cia402_sim_drive *drive,
+				const CO_CiA402_motionConfig_t *config)
+{
+	if (config != NULL) {
+		drive->last_config = *config;
+	}
+}
 
-/**
- * @brief Callback for setting LED indicator state.
- *
- * @param value true if the LED indicator shall be turned on, false otherwise.
- * @param arg argument that was passed when LEDs were initialized.
- */
+static bool_t cia402_set_enable_voltage(void *object, bool_t enable)
+{
+	struct cia402_sim_drive *drive = object;
+
+	drive->voltage_enabled = enable;
+	return true;
+}
+
+static bool_t cia402_set_switch_on(void *object, bool_t on)
+{
+	struct cia402_sim_drive *drive = object;
+
+	drive->switched_on = on;
+	return true;
+}
+
+static bool_t cia402_set_operation_enabled(void *object, bool_t enable)
+{
+	struct cia402_sim_drive *drive = object;
+
+	drive->operation_enabled = enable;
+	return true;
+}
+
+static bool_t cia402_set_quick_stop(void *object, bool_t quick_stop_active,
+				    const CO_CiA402_motionConfig_t *config)
+{
+	struct cia402_sim_drive *drive = object;
+
+	cia402_store_config(drive, config);
+	drive->quick_stop_active = quick_stop_active;
+	return true;
+}
+
+static bool_t cia402_set_halt(void *object, bool_t halt_active,
+			      const CO_CiA402_motionConfig_t *config)
+{
+	struct cia402_sim_drive *drive = object;
+
+	cia402_store_config(drive, config);
+	drive->halt_active = halt_active;
+	return true;
+}
+
+static bool_t cia402_set_mode(void *object, int8_t mode)
+{
+	struct cia402_sim_drive *drive = object;
+
+	drive->mode = mode;
+	return true;
+}
+
+static bool_t cia402_fault_reset(void *object)
+{
+	struct cia402_sim_drive *drive = object;
+
+	drive->feedback.faultActive = false;
+	drive->feedback.faultCode = CO_CIA402_ERR_NONE;
+	return true;
+}
+
+static bool_t cia402_run_profile_position(void *object, int32_t target_position,
+					  bool_t relative, bool_t override,
+					  bool_t change_on_set_point,
+					  const CO_CiA402_motionConfig_t *config)
+{
+	struct cia402_sim_drive *drive = object;
+
+	ARG_UNUSED(override);
+	ARG_UNUSED(change_on_set_point);
+	cia402_store_config(drive, config);
+
+	if (relative) {
+		drive->feedback.positionActualValue += target_position;
+	} else {
+		drive->feedback.positionActualValue = target_position;
+	}
+
+	drive->feedback.targetReached = true;
+	drive->feedback.setPointAcknowledged = true;
+	return true;
+}
+
+static bool_t cia402_run_profile_velocity(void *object, int32_t target_velocity,
+					  const CO_CiA402_motionConfig_t *config)
+{
+	struct cia402_sim_drive *drive = object;
+
+	cia402_store_config(drive, config);
+	drive->feedback.velocityActualValue = target_velocity;
+	drive->feedback.targetReached = target_velocity == 0;
+	return true;
+}
+
+static bool_t cia402_run_profile_torque(void *object, int16_t target_torque,
+					const CO_CiA402_motionConfig_t *config)
+{
+	struct cia402_sim_drive *drive = object;
+
+	cia402_store_config(drive, config);
+	drive->feedback.torqueActualValue = target_torque;
+	drive->feedback.targetReached = target_torque == 0;
+	return true;
+}
+
+static bool_t cia402_run_homing(void *object, int8_t homing_method,
+				const CO_CiA402_motionConfig_t *config)
+{
+	struct cia402_sim_drive *drive = object;
+
+	ARG_UNUSED(homing_method);
+	cia402_store_config(drive, config);
+	drive->feedback.positionActualValue = 0;
+	drive->feedback.homingAttained = true;
+	drive->feedback.homingCompleted = true;
+	drive->feedback.targetReached = true;
+	return true;
+}
+
+static bool_t cia402_run_csp(void *object, int32_t target_position,
+			     const CO_CiA402_motionConfig_t *config)
+{
+	struct cia402_sim_drive *drive = object;
+
+	cia402_store_config(drive, config);
+	drive->feedback.positionActualValue = target_position;
+	drive->feedback.targetReached = true;
+	return true;
+}
+
+static bool_t cia402_run_csv(void *object, int32_t target_velocity,
+			     const CO_CiA402_motionConfig_t *config)
+{
+	struct cia402_sim_drive *drive = object;
+
+	cia402_store_config(drive, config);
+	drive->feedback.velocityActualValue = target_velocity;
+	return true;
+}
+
+static bool_t cia402_run_cst(void *object, int16_t target_torque,
+			     const CO_CiA402_motionConfig_t *config)
+{
+	struct cia402_sim_drive *drive = object;
+
+	cia402_store_config(drive, config);
+	drive->feedback.torqueActualValue = target_torque;
+	return true;
+}
+
+static bool_t cia402_get_feedback(void *object, CO_CiA402_feedback_t *feedback)
+{
+	struct cia402_sim_drive *drive = object;
+
+	*feedback = drive->feedback;
+	return true;
+}
+
+static struct cia402_sim_drive cia402_drive;
+
+static const CO_CiA402_hwInterface_t cia402_hw = {
+	.setEnableVoltage = cia402_set_enable_voltage,
+	.setSwitchOn = cia402_set_switch_on,
+	.setOperationEnabled = cia402_set_operation_enabled,
+	.setQuickStop = cia402_set_quick_stop,
+	.setHalt = cia402_set_halt,
+	.setMode = cia402_set_mode,
+	.faultReset = cia402_fault_reset,
+	.runProfilePosition = cia402_run_profile_position,
+	.runProfileVelocity = cia402_run_profile_velocity,
+	.runProfileTorque = cia402_run_profile_torque,
+	.runHoming = cia402_run_homing,
+	.runCyclicSynchronousPosition = cia402_run_csp,
+	.runCyclicSynchronousVelocity = cia402_run_csv,
+	.runCyclicSynchronousTorque = cia402_run_cst,
+	.getFeedback = cia402_get_feedback,
+};
+#endif
+
 static void led_callback(bool value, void *arg)
 {
 	struct gpio_dt_spec *led_gpio = arg;
 
-	if (!led_gpio || !led_gpio->port) {
+	if (led_gpio == NULL || led_gpio->port == NULL) {
 		return;
 	}
 
 	gpio_pin_set_dt(led_gpio, value);
 }
 
-/**
- * @brief Configure LED indicators pins and callbacks.
- *
- * This routine configures the GPIOs for the red and green LEDs (if
- * available).
- *
- * @param nmt CANopenNode NMT object.
- */
-static void config_leds(CO_NMT_t *nmt)
+static void configure_led_gpio(struct gpio_dt_spec *led_gpio, const char *name)
 {
 	int err;
 
-	if (!led_green_gpio.port) {
-		LOG_INF("Green LED not available");
-	} else if (!gpio_is_ready_dt(&led_green_gpio)) {
-		LOG_ERR("Green LED device not ready");
-		led_green_gpio.port = NULL;
-	} else {
-		err = gpio_pin_configure_dt(&led_green_gpio,
-					    GPIO_OUTPUT_INACTIVE);
-		if (err) {
-			LOG_ERR("failed to configure Green LED gpio: %d", err);
-			led_green_gpio.port = NULL;
-		}
+	if (led_gpio->port == NULL) {
+		LOG_INF("%s LED not available", name);
+		return;
 	}
 
-	if (!led_red_gpio.port) {
-		LOG_INF("Red LED not available");
-	} else if (!gpio_is_ready_dt(&led_red_gpio)) {
-		LOG_ERR("Red LED device not ready");
-		led_red_gpio.port = NULL;
-	} else {
-		err = gpio_pin_configure_dt(&led_red_gpio,
-					    GPIO_OUTPUT_INACTIVE);
-		if (err) {
-			LOG_ERR("failed to configure Red LED gpio: %d", err);
-			led_red_gpio.port = NULL;
-		}
+	if (!gpio_is_ready_dt(led_gpio)) {
+		LOG_ERR("%s LED device not ready", name);
+		led_gpio->port = NULL;
+		return;
 	}
 
-	canopen_leds_init(nmt,
-			  led_callback, &led_green_gpio,
+	err = gpio_pin_configure_dt(led_gpio, GPIO_OUTPUT_INACTIVE);
+	if (err != 0) {
+		LOG_ERR("failed to configure %s LED gpio: %d", name, err);
+		led_gpio->port = NULL;
+	}
+}
+
+static void configure_leds(CO_LEDs_t *leds)
+{
+	configure_led_gpio(&led_green_gpio, "green");
+	configure_led_gpio(&led_red_gpio, "red");
+	canopen_leds_init(leds, led_callback, &led_green_gpio,
 			  led_callback, &led_red_gpio);
 }
 
-/**
- * @brief Button press counter object dictionary handler function.
- *
- * This function is called upon SDO access to the button press counter
- * object (index 0x2102) in the object dictionary.
- *
- * @param odf_arg object dictionary function argument.
- *
- * @return SDO abort code.
- */
-static CO_SDO_abortCode_t odf_2102(CO_ODF_arg_t *odf_arg)
+static bool canopen_init_stack(struct canopen_context *can, uint8_t node_id,
+			       uint16_t bitrate)
 {
-	uint32_t value;
+	CO_ReturnError_t err;
+	uint32_t err_info = 0;
 
-	value = CO_getUint32(odf_arg->data);
+	CO_CANsetConfigurationMode(can);
+	CO_CANmodule_disable(CO->CANmodule);
 
-	if (odf_arg->reading) {
-		return CO_SDO_AB_NONE;
+	err = CO_CANinit(CO, can, bitrate);
+	if (err != CO_ERROR_NO) {
+		LOG_ERR("CAN initialization failed: %d", err);
+		return false;
 	}
 
-	if (odf_arg->subIndex != 0U) {
-		return CO_SDO_AB_NONE;
+	err = CO_CANopenInit(CO, NULL, NULL, OD, NULL, NMT_CONTROL,
+			    FIRST_HB_TIME_MS, SDO_SERVER_TIMEOUT_MS,
+			    SDO_CLIENT_TIMEOUT_MS, false, node_id, &err_info);
+	if (err != CO_ERROR_NO && err != CO_ERROR_NODE_ID_UNCONFIGURED_LSS) {
+		if (err == CO_ERROR_OD_PARAMETERS) {
+			LOG_ERR("CANopen OD parameter error at 0x%04x", err_info);
+		} else {
+			LOG_ERR("CANopen initialization failed: %d", err);
+		}
+		return false;
 	}
 
-	if (value != 0) {
-		/* Preserve old value */
-		memcpy(odf_arg->data, odf_arg->ODdataStorage, sizeof(uint32_t));
-		return CO_SDO_AB_DATA_TRANSF;
+	if (CO->CANmodule != NULL) {
+		CO->CANmodule->em = CO->em;
 	}
 
-	LOG_INF("Resetting button press counter");
-	counter = 0;
+	err = CO_CANopenInitPDO(CO, CO->em, OD, node_id, &err_info);
+	if (err != CO_ERROR_NO && err != CO_ERROR_NODE_ID_UNCONFIGURED_LSS) {
+		if (err == CO_ERROR_OD_PARAMETERS) {
+			LOG_ERR("PDO OD parameter error at 0x%04x", err_info);
+		} else {
+			LOG_ERR("PDO initialization failed: %d", err);
+		}
+		return false;
+	}
 
-	return CO_SDO_AB_NONE;
+#if defined(CONFIG_CANOPENNODE_CIA402)
+	CO_CANopenInitCiA402Hw(CO, &cia402_drive, &cia402_hw);
+#endif
+
+	configure_leds(CO->LEDs);
+	CO_CANsetNormalMode(CO->CANmodule);
+
+	return true;
 }
 
-/**
- * @brief Button press interrupt callback.
- *
- * @param port GPIO device struct.
- * @param cb GPIO callback struct.
- * @param pins GPIO pin mask that triggered the interrupt.
- */
-static void button_isr_callback(const struct device *port,
-				struct gpio_callback *cb,
-				uint32_t pins)
-{
-	counter++;
-}
-
-/**
- * @brief Configure button GPIO pin and callback.
- *
- * This routine configures the GPIO for the button (if available).
- */
-static void config_button(void)
-{
-	int err;
-
-	if (button_gpio.port == NULL) {
-		LOG_INF("Button not available");
-		return;
-	}
-
-	if (!gpio_is_ready_dt(&button_gpio)) {
-		LOG_ERR("Button device not ready");
-		return;
-	}
-
-	err = gpio_pin_configure_dt(&button_gpio, GPIO_INPUT);
-	if (err) {
-		LOG_ERR("failed to configure button gpio: %d", err);
-		return;
-	}
-
-	gpio_init_callback(&button_callback, button_isr_callback,
-			   BIT(button_gpio.pin));
-
-	err = gpio_add_callback(button_gpio.port, &button_callback);
-	if (err) {
-		LOG_ERR("failed to add button callback: %d", err);
-		return;
-	}
-
-	err = gpio_pin_interrupt_configure_dt(&button_gpio,
-					      GPIO_INT_EDGE_TO_ACTIVE);
-	if (err) {
-		LOG_ERR("failed to enable button callback: %d", err);
-		return;
-	}
-}
-
-/**
- * @brief Main application entry point.
- *
- * The main application thread is responsible for initializing the
- * CANopen stack and doing the non real-time processing.
- */
 int main(void)
 {
+	struct canopen_context can = {
+		.dev = CAN_INTERFACE,
+	};
 	CO_NMT_reset_cmd_t reset = CO_RESET_NOT;
-	CO_ReturnError_t err;
-	struct canopen_context can;
-	uint16_t timeout;
-	uint32_t elapsed;
+	uint32_t heap_memory_used = 0;
+	uint32_t elapsed_us = 0U;
 	int64_t timestamp;
-#ifdef CONFIG_CANOPENNODE_STORAGE
-	int ret;
-#endif /* CONFIG_CANOPENNODE_STORAGE */
 
-	can.dev = CAN_INTERFACE;
 	if (!device_is_ready(can.dev)) {
 		LOG_ERR("CAN interface not ready");
 		return 0;
 	}
 
-#ifdef CONFIG_CANOPENNODE_STORAGE
-	ret = settings_subsys_init();
-	if (ret) {
-		LOG_ERR("failed to initialize settings subsystem (err = %d)",
-			ret);
+	CO = CO_new(NULL, &heap_memory_used);
+	if (CO == NULL) {
+		LOG_ERR("failed to allocate CANopen objects");
 		return 0;
 	}
 
-	ret = settings_load();
-	if (ret) {
-		LOG_ERR("failed to load settings (err = %d)", ret);
-		return 0;
-	}
-#endif /* CONFIG_CANOPENNODE_STORAGE */
-
-	OD_powerOnCounter++;
-
-	config_button();
+	LOG_INF("allocated %u bytes for CANopen objects", heap_memory_used);
 
 	while (reset != CO_RESET_APP) {
-		elapsed =  0U; /* milliseconds */
-
-		err = CO_init(&can, CONFIG_CANOPEN_NODE_ID, CAN_BITRATE);
-		if (err != CO_ERROR_NO) {
-			LOG_ERR("CO_init failed (err = %d)", err);
+		if (!canopen_init_stack(&can, CONFIG_CANOPEN_NODE_ID, CAN_BITRATE)) {
+			CO_delete(CO);
+			CO = NULL;
 			return 0;
 		}
 
 		LOG_INF("CANopen stack initialized");
+		reset = CO_RESET_NOT;
+		elapsed_us = 0U;
 
-#ifdef CONFIG_CANOPENNODE_STORAGE
-		canopen_storage_attach(CO->SDO[0], CO->em);
-#endif /* CONFIG_CANOPENNODE_STORAGE */
+		while (reset == CO_RESET_NOT) {
+			uint32_t timer_next_us = 1000U;
 
-		config_leds(CO->NMT);
-		CO_OD_configure(CO->SDO[0], OD_2102_buttonPressCounter,
-				odf_2102, NULL, 0U, 0U);
-
-		if (IS_ENABLED(CONFIG_CANOPENNODE_PROGRAM_DOWNLOAD)) {
-			canopen_program_download_attach(CO->NMT, CO->SDO[0],
-							CO->em);
-		}
-
-		CO_CANsetNormalMode(CO->CANmodule[0]);
-
-		while (true) {
-			timeout = 1U; /* default timeout in milliseconds */
 			timestamp = k_uptime_get();
-			reset = CO_process(CO, (uint16_t)elapsed, &timeout);
+			reset = CO_process(CO, false, elapsed_us, &timer_next_us);
 
 			if (reset != CO_RESET_NOT) {
 				break;
 			}
 
-			if (timeout > 0) {
-				CO_LOCK_OD();
-				OD_buttonPressCounter = counter;
-				CO_UNLOCK_OD();
+			if (!IS_ENABLED(CONFIG_CANOPENNODE_SYNC_THREAD)) {
+				bool_t sync = CO_process_SYNC(CO, elapsed_us, NULL);
 
-#ifdef CONFIG_CANOPENNODE_STORAGE
-				ret = canopen_storage_save(
-					CANOPEN_STORAGE_EEPROM);
-				if (ret) {
-					LOG_ERR("failed to save EEPROM");
-				}
-#endif /* CONFIG_CANOPENNODE_STORAGE */
-				/*
-				 * Try to sleep for as long as the
-				 * stack requested and calculate the
-				 * exact time elapsed.
-				 */
-				k_sleep(K_MSEC(timeout));
-				elapsed = (uint32_t)k_uptime_delta(&timestamp);
+				CO_process_RPDO(CO, sync, elapsed_us, NULL);
+				CO_process_TPDO(CO, sync, elapsed_us, NULL);
+			}
+
+			if (timer_next_us > 0U) {
+				k_sleep(K_USEC(timer_next_us));
+				elapsed_us = (uint32_t)k_uptime_delta(&timestamp) *
+					     USEC_PER_MSEC;
 			} else {
-				/*
-				 * Do not sleep, more processing to be
-				 * done by the stack.
-				 */
-				elapsed = 0U;
+				elapsed_us = 0U;
 			}
 		}
 
 		if (reset == CO_RESET_COMM) {
-			LOG_INF("Resetting communication");
+			LOG_INF("resetting CANopen communication");
 		}
 	}
 
-	LOG_INF("Resetting device");
+	LOG_INF("resetting device");
 
-	CO_delete(&can);
+	CO_CANmodule_disable(CO->CANmodule);
+	CO_delete(CO);
+	CO = NULL;
 	sys_reboot(SYS_REBOOT_COLD);
+
+	return 0;
 }

@@ -5,6 +5,7 @@
  */
 
 #include <CANopen.h>
+#include <canopennode.h>
 
 static struct k_timer sync_timer;
 static struct k_sem sync_sem;

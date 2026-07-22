@@ -12,9 +12,8 @@ if(CONFIG_CANOPENNODE)
   zephyr_library_sources(
     CANopenNode/CANopen.c
     CANopenNode/301/CO_Emergency.c
+    CANopenNode/301/CO_fifo.c
     CANopenNode/301/CO_HBconsumer.c
-    CANopenNode/301/CO_LSSmaster.c
-    CANopenNode/301/CO_LSSslave.c
     CANopenNode/301/CO_NMT_Heartbeat.c
     CANopenNode/301/CO_Node_Guarding.c
     CANopenNode/301/CO_ODinterface.c
@@ -27,6 +26,8 @@ if(CONFIG_CANOPENNODE)
     CANopenNode/303/CO_LEDs.c
     CANopenNode/304/CO_GFC.c
     CANopenNode/304/CO_SRDO.c
+    CANopenNode/305/CO_LSSmaster.c
+    CANopenNode/305/CO_LSSslave.c
     CANopenNode/309/CO_gateway_ascii.c
     CANopenNode/extra/CO_trace.c
     src/CO_driver.c

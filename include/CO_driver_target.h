@@ -101,6 +101,7 @@ typedef struct canopen_module {
 	uint16_t txSize;
 	uint16_t CANerrorStatus;
 	uint32_t errOld;
+	int fallback_filter_id;
 	void *em;
 	volatile bool_t CANnormal : 1;
 	volatile bool_t useCANrxFilters : 1;

@@ -347,9 +347,17 @@ int main(void)
 	LOG_INF("allocated %u bytes for CANopen objects", heap_memory_used);
 
 	while (reset != CO_RESET_APP) {
-		if (!canopen_init_stack(&can, CONFIG_CANOPEN_NODE_ID, CAN_BITRATE)) {
+		bool initialized;
+
+		CO_LOCK_OD(NULL);
+		initialized = canopen_init_stack(&can, CONFIG_CANOPEN_NODE_ID,
+					   CAN_BITRATE);
+		CO_UNLOCK_OD(NULL);
+		if (!initialized) {
+			CO_LOCK_OD(NULL);
 			CO_delete(CO);
 			CO = NULL;
+			CO_UNLOCK_OD(NULL);
 			return 0;
 		}
 
@@ -361,17 +369,29 @@ int main(void)
 			uint32_t timer_next_us = 1000U;
 
 			timestamp = k_uptime_get();
+			CO_LOCK_OD(NULL);
 			reset = CO_process(CO, false, elapsed_us, &timer_next_us);
+			CO_UNLOCK_OD(NULL);
 
 			if (reset != CO_RESET_NOT) {
 				break;
 			}
 
 			if (!IS_ENABLED(CONFIG_CANOPENNODE_SYNC_THREAD)) {
+				CO_LOCK_OD(NULL);
 				bool_t sync = CO_process_SYNC(CO, elapsed_us, NULL);
 
 				CO_process_RPDO(CO, sync, elapsed_us, NULL);
+#if defined(CONFIG_CANOPENNODE_CIA402)
+				if (sync && CO->NMT != NULL) {
+					CO_CiA402_processSync(
+						CO->CiA402,
+						CO->NMT->operatingState == CO_NMT_OPERATIONAL,
+						elapsed_us);
+				}
+#endif
 				CO_process_TPDO(CO, sync, elapsed_us, NULL);
+				CO_UNLOCK_OD(NULL);
 			}
 
 			if (timer_next_us > 0U) {
@@ -391,8 +411,10 @@ int main(void)
 	LOG_INF("resetting device");
 
 	CO_CANmodule_disable(CO->CANmodule);
+	CO_LOCK_OD(NULL);
 	CO_delete(CO);
 	CO = NULL;
+	CO_UNLOCK_OD(NULL);
 	sys_reboot(SYS_REBOOT_COLD);
 
 	return 0;

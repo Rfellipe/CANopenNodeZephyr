@@ -76,6 +76,15 @@ static void canopen_detach_all_rx_filters(CO_CANmodule_t *CANmodule)
 		return;
 	}
 
+	if (!CANmodule->useCANrxFilters) {
+		if (CANmodule->fallback_filter_id != -ENOSPC) {
+			can_remove_rx_filter(CANmodule->CANptr,
+					     CANmodule->fallback_filter_id);
+			CANmodule->fallback_filter_id = -ENOSPC;
+		}
+		return;
+	}
+
 	for (i = 0U; i < CANmodule->rxSize; i++) {
 		if (CANmodule->rxArray[i].filter_id != -ENOSPC) {
 			can_remove_rx_filter(CANmodule->CANptr,
@@ -99,7 +108,7 @@ static void canopen_rx_callback(const struct device *dev, struct can_frame *fram
 	for (i = 0; i < CANmodule->rxSize; i++) {
 		buffer = &CANmodule->rxArray[i];
 
-		if (buffer->filter_id == -ENOSPC || buffer->CANrx_callback == NULL) {
+		if (buffer->CANrx_callback == NULL) {
 			continue;
 		}
 
@@ -234,9 +243,9 @@ CO_ReturnError_t CO_CANmodule_init(CO_CANmodule_t *CANmodule,
 		}
 
 		if (rxSize > max_filters) {
-			LOG_ERR("insufficient number of concurrent CAN RX filters"
-				" (needs %d, %d available)", rxSize, max_filters);
-			return CO_ERROR_OUT_OF_MEMORY;
+			LOG_WRN("insufficient CAN RX filters (needs %d, %d available); "
+				"using software filtering", rxSize, max_filters);
+			CANmodule->useCANrxFilters = false;
 		} else if (rxSize < max_filters) {
 			LOG_DBG("excessive number of concurrent CAN RX filters enabled"
 				" (needs %d, %d available)", rxSize, max_filters);
@@ -252,7 +261,12 @@ CO_ReturnError_t CO_CANmodule_init(CO_CANmodule_t *CANmodule,
 	CANmodule->txArray = txArray;
 	CANmodule->txSize = txSize;
 	CANmodule->CANnormal = false;
-	CANmodule->useCANrxFilters = true;
+	if (max_filters == -ENOSYS) {
+		CANmodule->useCANrxFilters = true;
+	} else if (rxSize <= max_filters) {
+		CANmodule->useCANrxFilters = true;
+	}
+	CANmodule->fallback_filter_id = -ENOSPC;
 	CANmodule->bufferInhibitFlag = false;
 	CANmodule->firstCANtxMessage = true;
 	CANmodule->CANtxCount = 0U;
@@ -293,6 +307,7 @@ void CO_CANmodule_disable(CO_CANmodule_t *CANmodule)
 		return;
 	}
 
+	CANmodule->CANnormal = false;
 	canopen_detach_all_rx_filters(CANmodule);
 
 	err = can_stop(CANmodule->CANptr);
@@ -340,6 +355,22 @@ CO_ReturnError_t CO_CANrxBufferInit(CO_CANmodule_t *CANmodule, uint16_t index,
 	filter.flags = 0U;
 	filter.id = ident;
 	filter.mask = mask;
+
+	if (!CANmodule->useCANrxFilters) {
+		if (CANmodule->fallback_filter_id == -ENOSPC) {
+			filter.id = 0U;
+			filter.mask = 0U;
+			CANmodule->fallback_filter_id = can_add_rx_filter(
+				CANmodule->CANptr, canopen_rx_callback, CANmodule,
+				&filter);
+			if (CANmodule->fallback_filter_id < 0) {
+				LOG_ERR("failed to add fallback CAN RX filter (err %d)",
+					CANmodule->fallback_filter_id);
+				return CO_ERROR_OUT_OF_MEMORY;
+			}
+		}
+		return CO_ERROR_NO;
+	}
 
 	if (buffer->filter_id != -ENOSPC) {
 		can_remove_rx_filter(CANmodule->CANptr, buffer->filter_id);
@@ -576,7 +607,8 @@ static int canopen_init(void)
 			   K_KERNEL_STACK_SIZEOF(canopen_tx_workq_stack),
 			   CONFIG_CANOPENNODE_TX_WORKQUEUE_PRIORITY, NULL);
 
-	k_thread_name_set(&canopen_tx_workq.thread, "canopen_tx_workq");
+	k_thread_name_set(k_work_queue_thread_get(&canopen_tx_workq),
+			  "canopen_tx_workq");
 
 	k_work_init(&canopen_tx_queue.work, canopen_tx_retry);
 

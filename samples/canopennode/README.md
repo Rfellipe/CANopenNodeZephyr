@@ -1,399 +1,150 @@
-# CANopenNode Protocol Stack Zephyr Sample
+# CANopenNode CiA 402 Zephyr sample
 
 ## Overview
 
-This sample application shows how the [CANopenNode](https://github.com/CANopenNode/CANopenNode)
-CANopen protocol stack can be used in Zephyr.
+This sample demonstrates CANopenNode and the CiA 402 drive profile on Zephyr. It supplies a generated
+object dictionary and a simulated motor-control backend implementing profile position, velocity,
+torque, homing, CSP, CSV, and CST callbacks.
 
-CANopen is an internationally standardized (EN 50325-4, CiA 301) communication protocol and device
-specification for embedded systems used in automation. CANopenNode is a 3rd party, open-source
-CANopen protocol stack.
+The simulator applies targets immediately. It demonstrates integration and protocol behavior; it
+is not a physical motor-control or safety implementation.
 
-Apart from the CANopen protocol stack integration, this sample also demonstrates the use of
-non-volatile storage for the CANopen object dictionary and optionally program download over CANopen.
+See the repository's [Zephyr CiA 402 integration guide](../../docs/cia402-zephyr.md) for module
+installation, object-dictionary requirements, initialization order, callback semantics, and
+threading requirements.
 
 ## Requirements
 
-* A board with CAN bus and flash support
-* Host PC with CAN bus support
+- A Zephyr board with a classic CAN controller.
 
-### Building and Running for TWR-KE18F
+- A CAN transceiver when the selected board does not include one.
 
-The `twr_ke18f` board is equipped with an onboard CAN transceiver. This board supports CANopen LED
-indicators (red and green LEDs). The sample can be built and executed for the TWR-KE18F as follows:
+- A second CANopen node or PC CAN adapter for testing on physical hardware.
+
+The board devicetree must provide the `zephyr,canbus` chosen node. The supplied overlays configure
+the supported sample boards.
+
+## Configuration
+
+The default [prj.conf](prj.conf) enables CANopenNode, CiA 402, the module-managed SYNC thread, and
+CANopen status LEDs. The CiA 402 configuration currently disables the legacy object-dictionary
+storage and program-download adapters.
+
+The sample node ID defaults to 10 and is configurable through `CONFIG_CANOPEN_NODE_ID`.
+
+## Build and run
+
+When this repository is already a project in the active West manifest:
 
 ```shell
-west build -b twr_ke18f canopennodezephyr/samples/canopennode
+west build -b <board> canopennodezephyr/samples/canopennode
 west flash
 ```
 
-Pressing the button labelled `SW3` will increment the button press counter object at index `0x2102`
-in the object dictionary.
-
-### Building and Running for FRDM-K64F
-
-The `frdm_k64f` board does not come with an onboard CAN transceiver. In order to use the CAN bus on
-the FRDM-K64F board, an external CAN bus transceiver must be connected to `PTB18` (`CAN0_TX`) and
-`PTB19` (`CAN0_RX`). This board supports CANopen LED indicators (red and green LEDs)
-
-The sample can be built and executed for the FRDM-K64F as follows:
+When building directly from a checkout that is not registered in the active manifest:
 
 ```shell
-west build -b frdm_k64f canopennodezephyr/samples/canopennode
+west build -b <board> samples/canopennode -- \
+  -DZEPHYR_EXTRA_MODULES="$PWD"
 west flash
 ```
 
-Pressing the button labelled `SW3` will increment the button press counter object at index `0x2102`
-in the object dictionary.
-
-### Building and Running for STM32F072RB Discovery
-
-The `stm32f072b_disco` board does not come with an onboard CAN transceiver. In order to use the CAN
-bus on the STM32F072RB Discovery board, an external CAN bus transceiver must be connected to `PB8`
-(`CAN_RX`) and `PB9` (`CAN_TX`). This board supports CANopen LED indicators (red and green LEDs)
-
-The sample can be built and executed for the STM32F072RB Discovery as follows:
+For the native simulator:
 
 ```shell
-west build -b stm32f072b_disco canopennodezephyr/samples/canopennode
-west flash
+west build -b native_sim/native/64 samples/canopennode -- \
+  -DZEPHYR_EXTRA_MODULES="$PWD"
+west build -d build -t run
 ```
 
-Pressing the button labelled `USER` will increment the button press counter
-object at index `0x2102` in the object dictionary.
+A successful start prints:
 
-### Building and Running for STM32F3 Discovery
+```text
+CANopen stack initialized
+```
 
-The `stm32f3_disco` board does not come with an onboard CAN transceiver. In order to use the CAN bus
-on the STM32F3 Discovery board, an external CAN bus transceiver must be connected to `PD1`
-(`CAN_TX`) and `PD0` (`CAN_RX`). This board supports CANopen LED indicators (red and green LEDs)
+If the controller has fewer receive filters than the object dictionary requires, the driver prints
+a warning and uses software CAN-ID dispatch. This is expected on `native_sim`, which exposes 16
+filters while the sample requests 17.
 
-The sample can be built and executed for the STM32F3 Discovery as follows:
+## Supported boards
+
+The repository contains configuration or overlays for:
+
+- `native_sim/native/64`;
+
+- `twr_ke18f`;
+
+- `frdm_k64f`;
+
+- `stm32f072b_disco`;
+
+- `stm32f3_disco`; and
+
+- `stm32h573i_dk`.
+
+Boards without an onboard CAN transceiver require an external transceiver and board-appropriate CAN
+pin connections. Consult the Zephyr board documentation and schematic before enabling the bus.
+
+## Drive behavior
+
+After boot, place node 10 into the NMT operational state. A CANopen manager can then write the CiA
+402 controlword at `0x6040` and select a mode through `0x6060`. Read `0x6041` for the state-machine
+status and `0x6061` for the accepted mode.
+
+A typical transition to Operation Enabled writes these controlwords in order:
+
+1. `0x0006` — Shutdown, moving to Ready to Switch On.
+2. `0x0007` — Switch On, moving to Switched On.
+3. `0x000F` — Enable Operation, moving to Operation Enabled.
+
+The common sample targets are:
+
+| Mode | Value | Target object |
+| --- | ---: | --- |
+| Profile position | 1 | `0x607A` |
+| Velocity | 2 | `0x6042` |
+| Profile velocity | 3 | `0x60FF` |
+| Profile torque | 4 | `0x6071` |
+| Homing | 6 | `0x6098` |
+| CSP | 8 | `0x607A` |
+| CSV | 9 | `0x60FF` |
+| CST | 10 | `0x6071` |
+
+Profile position and homing use the new-set-point bit in the controlword. CSP, CSV, and CST commands
+are applied only on a received SYNC while the node is NMT operational and the CiA 402 state is
+Operation Enabled.
+
+## Replace the simulator with hardware
+
+The simulated backend is in [src/main.c](src/main.c). Replace its callbacks with an application
+object that controls the motor driver and reports measured position, velocity, torque, limits, and
+faults.
+
+State transitions and profile callbacks execute from the main CANopen thread. Cyclic callbacks
+execute from the SYNC thread after synchronous RPDO processing and before synchronous TPDO
+processing. Cyclic callbacks must not sleep, allocate memory, or perform unbounded work.
+
+Hardware protections such as safe torque off, overcurrent shutdown, watchdogs, travel limits, and
+emergency stop must remain independent of CANopen communication.
+
+## Test
+
+Run the Zephyr sample test with:
 
 ```shell
-west build -b stm32f3_disco canopennodezephyr/samples/canopennode
-west flash
+west twister -T samples/canopennode -p native_sim/native/64 --inline-logs
 ```
 
-Pressing the button labelled `USER` will increment the button press counter
-object at index `0x2102` in the object dictionary.
-
-### Building and Running for other STM32 boards
-
-The sample cannot run if the `<erase-block-size>` of the flash-controller exceeds 0x10000.
-Typically `nucleo_h743zi` with `erase-block-size = <DT_SIZE_K(128)>`;
-
-
-### Building and Running for boards without storage partition
-
-The sample can be built for boards without a flash storage partition by using a different configuration file:
+The lower-level state-machine tests reside in the CANopenNode submodule:
 
 ```shell
-west build -b <your_board_name> canopennodezephyr/samples/canopennode -- -DCONF_FILE=prj_no_storage.conf
-west flash
+make -C CANopenNode/test test
 ```
 
-## Testing CANopen Communication
-
-CANopen communication between the host PC and Zephyr can be established using any CANopen compliant
-application on the host PC.  The examples here uses [CANopen for
-Python](https://github.com/christiansandberg/canopen) for communicating between the host PC and
-Zephyr. First, install python-canopen along with the python-can backend as follows:
-
-```shell
-pip3 install --user canopen python-can
-```
-
-Next, configure python-can to use your CAN adapter through its
-configuration file. On GNU/Linux, the configuration looks similar to
-this:
-
-```shell
-cat << EOF > ~/.canrc
-[default]
-interface = socketcan
-channel = can0
-bitrate = 125000
-EOF
-```
-
-Please refer to the [python-can](https://python-can.readthedocs.io/) documentation for further
-details and instructions.
-
-Finally, bring up the CAN interface on the test PC. On GNU/Linux, this
-can be done as follows:
-
-```shell
-sudo ip link set can0 type can bitrate 125000 restart-ms 100
-sudo ip link set up can0
-```
-
-To better understand the communication taking place in the following examples, you can monitor the
-CAN traffic from the host PC. On GNU/Linux, this can be accomplished using `candump` from the
-[can-utils](https://github.com/linux-can/can-utils) package as follows:
-
-```shell
-candump can0
-```
-
-### NMT State Changes
-
-Changing the Network Management (NMT) state of the node can be
-accomplished using the following Python code:
-
-```python
-import canopen
-import os
-import time
-
-EDS = os.path.join('samples', 'canopennode', 'objdict', 'objdict.eds')
-
-NODEID = 10
-
-network = canopen.Network()
-
-network.connect()
-
-node = network.add_node(NODEID, EDS)
-
-# Green indicator LED will flash slowly
-node.nmt.state = 'STOPPED'
-time.sleep(5)
-
-# Green indicator LED will flash faster
-node.nmt.state = 'PRE-OPERATIONAL'
-time.sleep(5)
-
-# Green indicator LED will be steady on
-node.nmt.state = 'OPERATIONAL'
-time.sleep(5)
-
-# Node will reset communication
-node.nmt.state = 'RESET COMMUNICATION'
-node.nmt.wait_for_heartbeat()
-
-# Node will reset
-node.nmt.state = 'RESET'
-node.nmt.wait_for_heartbeat()
-
-network.disconnect()
-```
-
-Running the above Python code will update the NMT state of the node
-which is reflected on the indicator LEDs (if present).
-
-### SDO Upload
-
-Reading a Service Data Object (SDO) at a given index of the CANopen
-object dictionary (here index `0x1008`, the manufacturer device
-name) can be accomplished using the following Python code:
-
-```python
-import canopen
-import os
-
-EDS = os.path.join('samples', 'canopennode', 'objdict', 'objdict.eds')
-
-NODEID = 10
-
-network = canopen.Network()
-
-network.connect()
-
-node = network.add_node(NODEID, EDS)
-name = node.sdo['Manufacturer device name']
-
-print("Device name: '{}'".format(name.raw))
-
-network.disconnect()
-```
-
-Running the above Python code should produce the following output:
-
-```shell
-Device name: 'Zephyr RTOS/CANopenNode'
-```
-
-### SDO Download
-
-Writing to a Service Data Object (SDO) at a given index of the CANopen
-object dictionary (here index `0x1017`, the producer heartbeat time)
-can be accomplished using the following Python code:
-
-```python
-import canopen
-import os
-
-EDS = os.path.join('samples', 'canopennode', 'objdict', 'objdict.eds')
-
-NODEID = 10
-
-network = canopen.Network()
-
-network.connect()
-
-node = network.add_node(NODEID, EDS)
-heartbeat = node.sdo['Producer heartbeat time']
-reboots = node.sdo['Power-on counter']
-
-# Set heartbeat interval without saving to non-volatile storage
-print("Initial heartbeat time: {} ms".format(heartbeat.raw))
-print("Power-on counter: {}".format(reboots.raw))
-heartbeat.raw = 5000
-print("Updated heartbeat time: {} ms".format(heartbeat.raw))
-
-# Reset and read heartbeat interval again
-node.nmt.state = 'RESET'
-node.nmt.wait_for_heartbeat()
-print("heartbeat time after reset: {} ms".format(heartbeat.raw))
-print("Power-on counter: {}".format(reboots.raw))
-
-# Set interval and store it to non-volatile storage
-heartbeat.raw = 2000
-print("Updated heartbeat time: {} ms".format(heartbeat.raw))
-node.store()
-
-# Reset and read heartbeat interval again
-node.nmt.state = 'RESET'
-node.nmt.wait_for_heartbeat()
-print("heartbeat time after store and reset: {} ms".format(heartbeat.raw))
-print("Power-on counter: {}".format(reboots.raw))
-
-# Restore default values, reset and read again
-node.restore()
-node.nmt.state = 'RESET'
-node.nmt.wait_for_heartbeat()
-print("heartbeat time after restore and reset: {} ms".format(heartbeat.raw))
-print("Power-on counter: {}".format(reboots.raw))
-
-network.disconnect()
-```
-
-Running the above Python code should produce the following output:
-
-```shell
-Initial heartbeat time: 1000 ms
-Power-on counter: 1
-Updated heartbeat time: 5000 ms
-heartbeat time after reset: 1000 ms
-Power-on counter: 2
-Updated heartbeat time: 2000 ms
-heartbeat time after store and reset: 2000 ms
-Power-on counter: 3
-heartbeat time after restore and reset: 1000 ms
-Power-on counter: 4
-```
-
-Note that the power-on counter value may be different.
-
-### PDO Mapping
-
-Transmit Process Data Object (PDO) mapping for data at a given index
-of the CANopen object dictionary (here index `0x2102`, the button
-press counter) can be accomplished using the following Python code:
-
-```python
-import canopen
-import os
-
-EDS = os.path.join('samples', 'canopennode', 'objdict', 'objdict.eds')
-
-NODEID = 10
-
-network = canopen.Network()
-
-network.connect()
-
-node = network.add_node(NODEID, EDS)
-button = node.sdo['Button press counter']
-
-# Read current TPDO mapping
-node.tpdo.read()
-
-# Enter pre-operational state to map TPDO
-node.nmt.state = 'PRE-OPERATIONAL'
-
-# Map TPDO 1 to transmit the button press counter on changes
-node.tpdo[1].clear()
-node.tpdo[1].add_variable('Button press counter')
-node.tpdo[1].trans_type = 254
-node.tpdo[1].enabled = True
-
-# Save TPDO mapping
-node.tpdo.save()
-node.nmt.state = 'OPERATIONAL'
-
-# Reset button press counter
-button.raw = 0
-
-print("Press the button 10 times")
-while True:
-    node.tpdo[1].wait_for_reception()
-    print("Button press counter: {}".format(node.tpdo['Button press counter'].phys))
-    if node.tpdo['Button press counter'].phys >= 10:
-        break
-
-network.disconnect()
-```
-
-Running the above Python code should produce the following output:
-
-```shell
-Press the button 10 times
-Button press counter: 0
-Button press counter: 1
-Button press counter: 2
-Button press counter: 3
-Button press counter: 4
-Button press counter: 5
-Button press counter: 6
-Button press counter: 7
-Button press counter: 8
-Button press counter: 9
-Button press counter: 10
-```
-
-## Testing CANopen Program Download
-
-### Building and Running for FRDM-K64F
-
-The sample can be rebuilt with MCUboot and program download support
-for the FRDM-K64F as follows:
-
-1. Build the CANopenNode sample with MCUboot support:
-
-```shell
-west build --sysbuild -b frdm_k64f canopennodezephyr/samples/canopennode -- -Dcanopennode_CONF_FILE=prj_img_mgmt.conf -DSB_CONFIG_BOOTLOADER_MCUBOOT=y
-west flash
-```
-
-2. Flash the newly built MCUboot and CANopen sample binaries using west:
-
-```shell
-west flash --no-rebuild
-```
-
-3. Confirm the newly flashed firmware image using west:
-
-```shell
-west flash --no-rebuild --domain canopennode --runner canopen --confirm-only
-```
-
-4. Finally, perform a program download via CANopen:
-
-```shell
-west flash --no-rebuild --domain canopennode --runner canopen
-```
-
-## Modifying the Object Dictionary
-
-The CANopen object dictionary used in this sample application can be found under
-`samples/canopennode/objdict`. The object dictionary can be modified using any object dictionary
-editor supporting CANopenNode object dictionary code generation.
-
-A popular choice is the EDS editor from the
-[libedssharp](https://github.com/robincornelius/libedssharp) project. With that, the
-`samples/canopennode/objdict/objdict.xml` project file can be opened and modified, and new
-implementation files (`samples/canopennode/objdict/CO_OD.h` and
-`samples/canopennode/objdict/CO_OD.c`) can be generated. The EDS editor can also export an updated
-Electronic Data Sheet (EDS) file (`samples/canopennode/objdict/objdict.eds`).
+## Modify the object dictionary
+
+Edit [objdict/objdict.eds](objdict/objdict.eds) or the corresponding XML project and regenerate the
+CANopenNode v4 `CO_OD.c`, `CO_OD.h`, and `OD.h` files. Preserve the mandatory CiA 402 entries and
+`OD_CNT_CIA402=1`. Review PDO mapping, access attributes, default limits, and units before using the
+generated dictionary on real hardware.

@@ -60,13 +60,21 @@ static void canopen_sync_thread(void *p1, void *p2, void *p3)
 		elapsed = (uint32_t)k_cyc_to_ns_floor64(delta) / NSEC_PER_USEC;
 		last_sync_time = current_time;
 
+		CO_LOCK_OD(NULL);
 		if (CO && CO->CANmodule && CO->CANmodule->CANnormal) {
-			CO_LOCK_OD(NULL);
 			sync = CO_process_SYNC(CO, elapsed, NULL);
 			CO_process_RPDO(CO, sync, elapsed, NULL);
+#if defined(CONFIG_CANOPENNODE_CIA402)
+			if (sync && CO->NMT != NULL) {
+				CO_CiA402_processSync(
+					CO->CiA402,
+					CO->NMT->operatingState == CO_NMT_OPERATIONAL,
+					elapsed);
+			}
+#endif
 			CO_process_TPDO(CO, sync, elapsed, NULL);
-			CO_UNLOCK_OD(NULL);
 		}
+		CO_UNLOCK_OD(NULL);
 	}
 }
 
